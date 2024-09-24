@@ -130,11 +130,11 @@ if __name__ == "__main__":
     print(f"Using device: {device}")
 
     # 하이퍼파라미터 설정
-    batch_size = 32
+    batch_size = 64
     initial_epochs = 200
     fine_tune_epochs = 250
-    learning_rate_initial = 1e-5
-    learning_rate_fine_tune = 1e-6
+    learning_rate_initial = 1e-4
+    learning_rate_fine_tune = 1e-5
     num_workers = 4  # 데이터 로더에서 사용할 워커 스레드 수 설정
 
     # 데이터 경로 설정
@@ -255,4 +255,4 @@ if __name__ == "__main__":
     print('\n혼동 행렬:\n', confusion_matrix(y_true, y_pred))
 
     # 최종 모델 저장
-    torch.save(model.state_dict(), 'WOOTD-Model.pth')
+    torch.save(model.state_dict(), 'WOOTD-Model2.pth')
