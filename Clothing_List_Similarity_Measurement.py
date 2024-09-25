@@ -3,19 +3,50 @@ from ultralytics import YOLO
 from PIL import Image
 import torch
 import torch.nn.functional as F
-from torchvision import transforms
-from keras.models import load_model
+from torchvision import transforms, models
 import numpy as np
 import cv2  # OpenCV 사용
+from torch import nn
 
 # YOLOv8 모델 로드
 model = YOLO('TOP&BOTTOM_Detection.pt')
 
-# 파인튜닝된 MobileNetV2 모델 로드
-fine_tuned_model = load_model('WOOTD-Model.pth')
+# GPU 장치 설정 (가능하면 CUDA, 그렇지 않으면 CPU)
+device = torch.device("cuda" if torch.cuda.is_available() else 'cpu')
 
-# MPS 장치 설정 (사용 가능하면 MPS, 그렇지 않으면 CPU)
-device = 'mps' if torch.backends.mps.is_available() else 'cpu'
+# YOLOv8 모델을 GPU로 설정
+model.to(device)
+
+# 파인튜닝된 MobileNetV3 모델 정의
+class MobileNetWithHist(nn.Module):
+    def __init__(self, num_classes):
+        super(MobileNetWithHist, self).__init__()
+        self.base_model = models.mobilenet_v3_small(weights=models.MobileNet_V3_Small_Weights.DEFAULT)
+        self.base_model.classifier = nn.Identity()  # 최종 레이어 제거
+        self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
+        
+        self.fc1 = nn.Linear(576 + 768, 1024)  # MobileNet output + 히스토그램 크기
+        self.fc2 = nn.Linear(1024, num_classes)
+        self.dropout = nn.Dropout(0.3)
+
+    def forward(self, x, hist):
+        x = self.base_model.features(x)
+        x = self.global_pool(x)
+        x = x.view(x.size(0), -1)
+        x = torch.cat((x, hist), dim=1)  # 히스토그램과 결합
+        x = nn.functional.leaky_relu(self.fc1(x))
+        x = self.dropout(x)
+        x = self.fc2(x)
+        return x
+
+# 파인튜닝된 MobileNetV3 모델 로드
+num_classes = 8  # 예시로 사용, 실제 클래스 수에 맞춰 조정
+fine_tuned_model = MobileNetWithHist(num_classes)
+fine_tuned_model.load_state_dict(torch.load('WOOTD-Model.pth', map_location=torch.device(device)))
+fine_tuned_model.eval()  # 평가 모드로 전환
+
+# MobileNetV3 모델을 GPU로 설정
+fine_tuned_model = fine_tuned_model.to(device)
 
 # 이미지 전처리 파이프라인 설정
 preprocess = transforms.Compose([
@@ -39,9 +70,9 @@ def extract_color_histogram(image_array):
 
 # 입력된 스타일 이미지를 YOLO로 탐지하여 바운딩 박스 크롭 및 특징 벡터 추출
 def extract_feature_vector(image_path):
-    # YOLOv8 탐지 수행
-    result = model(image_path)
-    
+    # YOLOv8 탐지 수행 (GPU로 실행)
+    result = model(image_path, device=device)
+
     # 원본 이미지 로드
     img = Image.open(image_path)
 
@@ -62,20 +93,17 @@ def extract_feature_vector(image_path):
     resized_img = cropped_img.resize((224, 224))
     
     # 전처리 및 모델에 적용하여 특징 벡터 추출
-    input_tensor = preprocess(resized_img).unsqueeze(0).numpy()
-    
-    # 입력 텐서의 축 순서 변경 (N, C, H, W) -> (N, H, W, C)
-    input_tensor = np.transpose(input_tensor, (0, 2, 3, 1))
+    input_tensor = preprocess(resized_img).unsqueeze(0).to(device)
     
     # OpenCV로 이미지를 numpy 배열로 변환하여 색상 히스토그램 계산
     image_array = np.array(cropped_img)
-    color_histogram = extract_color_histogram(image_array)
+    color_histogram = torch.tensor(extract_color_histogram(image_array)).unsqueeze(0).to(device).float()
     
     # 입력 텐서와 색상 히스토그램을 함께 예측 함수에 전달
-    feature_vector = fine_tuned_model.predict([input_tensor, np.expand_dims(color_histogram, axis=0)])
+    with torch.no_grad():
+        feature_vector = fine_tuned_model(input_tensor, color_histogram)
     
-    # Keras 모델 출력(Numpy 배열)을 PyTorch 텐서로 변환
-    return torch.tensor(feature_vector).squeeze()  # (1, N) -> (N,)
+    return feature_vector.squeeze()
 
 # 사용자의 의류 이미지 경로 설정
 user_clothing_paths = {
@@ -96,7 +124,7 @@ user_clothing_paths = {
 }
 
 # 입력된 스타일 이미지 경로 설정 (비교 대상 스타일)
-style_image_path = os.path.join(os.getcwd(), 'test_1.png')
+style_image_path = os.path.join(os.getcwd(), 'Test_1_BGR.png')
 
 # 입력된 스타일 특징 벡터 추출
 style_feature_vector = extract_feature_vector(style_image_path)
@@ -117,9 +145,7 @@ user_bottom_features = extract_user_clothing_features(user_clothing_paths['botto
 def cosine_similarity(feature, feature_list):
     similarities = []
     for i, other_feature in enumerate(feature_list):
-        sim = F.cosine_similarity(
-            feature, other_feature, dim=0
-        )
+        sim = F.cosine_similarity(feature, other_feature, dim=0)
         similarities.append((i, sim.item()))
     return similarities
 
