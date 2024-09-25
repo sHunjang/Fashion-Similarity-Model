@@ -26,11 +26,11 @@ def extract_color_histogram(image):
 class MobileNetWithHist(nn.Module):
     def __init__(self, num_classes):
         super(MobileNetWithHist, self).__init__()
-        self.base_model = models.mobilenet_v3_small(weights=models.MobileNet_V3_Small_Weights.DEFAULT)
+        self.base_model = models.mobilenet_v3_large(weights=models.MobileNet_V3_Large_Weights.DEFAULT)
         self.base_model.classifier = nn.Identity()  # 최종 레이어 제거
         self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
         
-        self.fc1 = nn.Linear(576 + 768, 1024)  # MobileNet output + 히스토그램 크기
+        self.fc1 = nn.Linear(1728, 1024)  # MobileNet output + 히스토그램 크기
         self.fc2 = nn.Linear(1024, num_classes)
         self.dropout = nn.Dropout(0.3)
 
@@ -130,12 +130,12 @@ if __name__ == "__main__":
     print(f"Using device: {device}")
 
     # 하이퍼파라미터 설정
-    batch_size = 64
+    batch_size = 32
     initial_epochs = 200
     fine_tune_epochs = 250
-    learning_rate_initial = 1e-4
-    learning_rate_fine_tune = 1e-5
-    num_workers = 4  # 데이터 로더에서 사용할 워커 스레드 수 설정
+    learning_rate_initial = 1e-5
+    learning_rate_fine_tune = 1e-6
+    num_workers = 8  # 데이터 로더에서 사용할 워커 스레드 수 설정
 
     # 데이터 경로 설정
     train_dir = 'Dataset/train'
@@ -255,4 +255,4 @@ if __name__ == "__main__":
     print('\n혼동 행렬:\n', confusion_matrix(y_true, y_pred))
 
     # 최종 모델 저장
-    torch.save(model.state_dict(), 'WOOTD-Model2.pth')
+    torch.save(model.state_dict(), 'WOOTD-Model_Large.pth')
