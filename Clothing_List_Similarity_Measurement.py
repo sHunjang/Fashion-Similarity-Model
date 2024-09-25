@@ -12,7 +12,7 @@ from torch import nn
 model = YOLO('TOP&BOTTOM_Detection.pt')
 
 # GPU 장치 설정 (가능하면 CUDA, 그렇지 않으면 CPU)
-device = torch.device("cuda" if torch.cuda.is_available() else 'cpu')
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # YOLOv8 모델을 GPU로 설정
 model.to(device)
@@ -42,7 +42,7 @@ class MobileNetWithHist(nn.Module):
 # 파인튜닝된 MobileNetV3 모델 로드
 num_classes = 8  # 예시로 사용, 실제 클래스 수에 맞춰 조정
 fine_tuned_model = MobileNetWithHist(num_classes)
-fine_tuned_model.load_state_dict(torch.load('WOOTD-Model.pth', map_location=torch.device(device)))
+fine_tuned_model.load_state_dict(torch.load('WOOTD-Model.pth', map_location=torch.device('cuda')))
 fine_tuned_model.eval()  # 평가 모드로 전환
 
 # MobileNetV3 모델을 GPU로 설정
@@ -71,7 +71,7 @@ def extract_color_histogram(image_array):
 # 입력된 스타일 이미지를 YOLO로 탐지하여 바운딩 박스 크롭 및 특징 벡터 추출
 def extract_feature_vector(image_path):
     # YOLOv8 탐지 수행 (GPU로 실행)
-    result = model(image_path, device=device)
+    result = model(image_path, device='cpu')  # device 설정 추가
 
     # 원본 이미지 로드
     img = Image.open(image_path)

@@ -135,7 +135,7 @@ if __name__ == "__main__":
     fine_tune_epochs = 250
     learning_rate_initial = 1e-5
     learning_rate_fine_tune = 1e-6
-    num_workers = 8  # 데이터 로더에서 사용할 워커 스레드 수 설정
+    num_workers = 4  # 데이터 로더에서 사용할 워커 스레드 수 설정
 
     # 데이터 경로 설정
     train_dir = 'Dataset/train'
