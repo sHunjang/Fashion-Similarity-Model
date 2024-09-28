@@ -8,6 +8,7 @@ import numpy as np
 import cv2
 import os
 import matplotlib.pyplot as plt
+import torch.onnx
 
 # 색상 히스토그램 추출 함수
 def extract_color_histogram(image):
@@ -26,23 +27,29 @@ def extract_color_histogram(image):
 class MobileNetWithHist(nn.Module):
     def __init__(self, num_classes):
         super(MobileNetWithHist, self).__init__()
-        self.base_model = models.mobilenet_v3_large(weights=models.MobileNet_V3_Large_Weights.DEFAULT)
+        self.base_model = models.mobilenet_v2(weights=models.MobileNet_V2_Weights.DEFAULT)
         self.base_model.classifier = nn.Identity()  # 최종 레이어 제거
         self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
         
-        self.fc1 = nn.Linear(1728, 1024)  # MobileNet output + 히스토그램 크기
+        # MobileNetV3의 출력 크기 수정 (576)
+        mobilenet_output_size = 576  # MobileNetV3 Small의 출력 크기
+        hist_size = 768  # 색상 히스토그램 크기
+
+        self.fc1 = nn.Linear(mobilenet_output_size + hist_size, 1024)  # MobileNet output + 히스토그램 크기
         self.fc2 = nn.Linear(1024, num_classes)
         self.dropout = nn.Dropout(0.3)
 
     def forward(self, x, hist):
         x = self.base_model.features(x)
         x = self.global_pool(x)
-        x = x.view(x.size(0), -1)
+        x = x.view(x.size(0), -1)  # Flatten the output
         x = torch.cat((x, hist), dim=1)  # 히스토그램과 결합
         x = nn.functional.leaky_relu(self.fc1(x))
         x = self.dropout(x)
         x = self.fc2(x)
         return x
+
+
 
 # 학습 및 검증 함수
 def train_model(model, criterion, optimizer, num_epochs, train_loader, val_loader):
@@ -131,8 +138,8 @@ if __name__ == "__main__":
 
     # 하이퍼파라미터 설정
     batch_size = 32
-    initial_epochs = 200
-    fine_tune_epochs = 250
+    initial_epochs = 150
+    fine_tune_epochs = 200
     learning_rate_initial = 1e-5
     learning_rate_fine_tune = 1e-6
     num_workers = 4  # 데이터 로더에서 사용할 워커 스레드 수 설정
@@ -254,5 +261,7 @@ if __name__ == "__main__":
     print('\n분류 보고서:\n', classification_report(y_true, y_pred, target_names=test_dataset.classes))
     print('\n혼동 행렬:\n', confusion_matrix(y_true, y_pred))
 
+    
+    
     # 최종 모델 저장
-    torch.save(model.state_dict(), 'WOOTD-Model_Large.pth')
+    torch.save(model.state_dict(), 'WOOTD-Model_V3Small.pth')

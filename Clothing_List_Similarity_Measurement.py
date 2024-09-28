@@ -5,16 +5,16 @@ import torch
 import torch.nn.functional as F
 from torchvision import transforms, models
 import numpy as np
-import cv2  # OpenCV 사용
+import cv2
 from torch import nn
 
-# YOLOv8 모델 로드
-model = YOLO('TOP&BOTTOM_Detection.pt')
+base_path = ''
 
+# YOLO 모델 경로 설정
+model = YOLO(f'{base_path}TOP&BOTTOM_Detection.pt')
+      
 # GPU 장치 설정 (가능하면 CUDA, 그렇지 않으면 CPU)
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-# YOLOv8 모델을 GPU로 설정
 model.to(device)
 
 # 파인튜닝된 MobileNetV3 모델 정의
@@ -39,14 +39,15 @@ class MobileNetWithHist(nn.Module):
         x = self.fc2(x)
         return x
 
-# 파인튜닝된 MobileNetV3 모델 로드
-num_classes = 8  # 예시로 사용, 실제 클래스 수에 맞춰 조정
-fine_tuned_model = MobileNetWithHist(num_classes)
-fine_tuned_model.load_state_dict(torch.load('WOOTD-Model.pth', map_location=torch.device('cuda')))
-fine_tuned_model.eval()  # 평가 모드로 전환
-
-# MobileNetV3 모델을 GPU로 설정
-fine_tuned_model = fine_tuned_model.to(device)
+def initialize_model(num_classes):
+    fine_tuned_model = MobileNetWithHist(num_classes)
+    state_dict = torch.load('WOOTD-Model_V2.pth', map_location=device)
+    
+    # 특정 레이어를 제외하고 가중치 로드
+    pretrained_dict = {k: v for k, v in state_dict.items() if "base_model.features.0" not in k and "fc1" not in k}
+    fine_tuned_model.load_state_dict(pretrained_dict, strict=False)  # strict=False로 불일치 무시
+    fine_tuned_model.eval()
+    return fine_tuned_model.to(device)
 
 # 이미지 전처리 파이프라인 설정
 preprocess = transforms.Compose([
@@ -69,9 +70,9 @@ def extract_color_histogram(image_array):
     return np.concatenate([h_hist, s_hist, v_hist])
 
 # 입력된 스타일 이미지를 YOLO로 탐지하여 바운딩 박스 크롭 및 특징 벡터 추출
-def extract_feature_vector(image_path):
+def extract_feature_vector(image_path, model, fine_tuned_model):
     # YOLOv8 탐지 수행 (GPU로 실행)
-    result = model(image_path, device='cpu')  # device 설정 추가
+    result = model(image_path, device='cpu')
 
     # 원본 이미지 로드
     img = Image.open(image_path)
@@ -84,7 +85,7 @@ def extract_feature_vector(image_path):
     box = boxes[0]  # 첫 번째 객체만 추출
     xyxy = box.xyxy.cpu().numpy()[0]  # 바운딩 박스 좌표 추출
     cropped_img = img.crop((xyxy[0], xyxy[1], xyxy[2], xyxy[3]))
-    
+
     # 이미지가 'RGBA' 모드라면 'RGB'로 변환
     if cropped_img.mode == 'RGBA':
         cropped_img = cropped_img.convert('RGB')
@@ -105,81 +106,88 @@ def extract_feature_vector(image_path):
     
     return feature_vector.squeeze()
 
-# 사용자의 의류 이미지 경로 설정
-user_clothing_paths = {
-    'top': [
-        os.path.join(os.getcwd(), 'User_Clothing_List/Tops/Top1.png'),
-        os.path.join(os.getcwd(), 'User_Clothing_List/Tops/Top2.png'),
-        os.path.join(os.getcwd(), 'User_Clothing_List/Tops/Top3.png'),
-        os.path.join(os.getcwd(), 'User_Clothing_List/Tops/Top4.png'),
-        os.path.join(os.getcwd(), 'User_Clothing_List/Tops/Top5.png'),
-    ],
-    'bottom': [
-        os.path.join(os.getcwd(), 'User_Clothing_List/Bottoms/Bottom1.png'),
-        os.path.join(os.getcwd(), 'User_Clothing_List/Bottoms/Bottom2.png'),
-        os.path.join(os.getcwd(), 'User_Clothing_List/Bottoms/Bottom3.png'),
-        os.path.join(os.getcwd(), 'User_Clothing_List/Bottoms/Bottom4.png'),
-        os.path.join(os.getcwd(), 'User_Clothing_List/Bottoms/Bottom5.png'),
-    ]
-}
-
-# 입력된 스타일 이미지 경로 설정 (비교 대상 스타일)
-style_image_path = os.path.join(os.getcwd(), 'Test_1_BGR.png')
-
-# 입력된 스타일 특징 벡터 추출
-style_feature_vector = extract_feature_vector(style_image_path)
-
-# 사용자의 의류에 대한 특징 벡터 추출 함수
-def extract_user_clothing_features(clothing_paths):
+# 입력된 스타일과 사용자의 의류에 대한 특징 벡터 추출 함수
+def extract_user_clothing_features(clothing_paths, model, fine_tuned_model):
     clothing_features = []
     for clothing_path in clothing_paths:
-        feature_vector = extract_feature_vector(clothing_path)
+        feature_vector = extract_feature_vector(clothing_path, model, fine_tuned_model)
         clothing_features.append(feature_vector)
     return clothing_features
-
-# 상의 및 하의에 대한 특징 벡터 추출
-user_top_features = extract_user_clothing_features(user_clothing_paths['top'])
-user_bottom_features = extract_user_clothing_features(user_clothing_paths['bottom'])
 
 # 유사도 측정 함수 (입력된 스타일과 사용자의 의류 비교)
 def cosine_similarity(feature, feature_list):
     similarities = []
     for i, other_feature in enumerate(feature_list):
         sim = F.cosine_similarity(feature, other_feature, dim=0)
-        similarities.append((i, sim.item()))
+        adjusted_sim = (sim.item() + 1) / 2  # 코사인 유사도를 0~1 범위로 변환
+        similarities.append((i, adjusted_sim))
     return similarities
 
-# 선택된 스타일과 사용자의 의류 목록 비교하여 상위 3개 추출
+# 선택된 스타일과 사용자의 의류 목록 비교하여 상위 k개 추출
 def top_k_similarities(style_feature, user_features, k=3):
     similarities = cosine_similarity(style_feature, user_features)
     similarities.sort(key=lambda x: x[1], reverse=True)  # 유사도 높은 순으로 정렬
     return similarities[:k]  # 상위 k개 반환
 
-# 입력된 스타일과 사용자의 상의/하의 비교하여 상위 3개 출력
-top_3_similar_tops = top_k_similarities(style_feature_vector, user_top_features, k=3)
-bottom_3_similar_bottoms = top_k_similarities(style_feature_vector, user_bottom_features, k=3)
+# 메인 함수: 사용자 의류와 스타일 이미지를 받아서 처리하는 함수
+def find_similar_clothing(user_clothing_paths, style_image_path):
+    fine_tuned_model = initialize_model(num_classes=8)
 
-# 결과 출력
-print("입력된 스타일과 유사도가 높은 상위 3개의 상의:")
-for idx, sim in top_3_similar_tops:
-    print(f"Top_{idx + 1} 유사도: {sim}")
+    # 입력된 스타일 특징 벡터 추출
+    style_feature_vector = extract_feature_vector(style_image_path, model, fine_tuned_model)
 
-print("입력된 스타일과 유사도가 높은 상위 3개의 하의:")
-for idx, sim in bottom_3_similar_bottoms:
-    print(f"Bottom_{idx + 1} 유사도: {sim}")
+    # 상의 및 하의에 대한 특징 벡터 추출
+    user_top_features = extract_user_clothing_features(user_clothing_paths['top'], model, fine_tuned_model)
+    user_bottom_features = extract_user_clothing_features(user_clothing_paths['bottom'], model, fine_tuned_model)
 
-# 유사도가 높은 상의/하의 저장
-output_dir = 'similar_clothings'
-os.makedirs(output_dir, exist_ok=True)
+    # 입력된 스타일과 사용자의 상의/하의 비교하여 상위 3개 출력
+    top_3_similar_tops = top_k_similarities(style_feature_vector, user_top_features, k=3)
+    bottom_3_similar_bottoms = top_k_similarities(style_feature_vector, user_bottom_features, k=3)
 
-for i, (idx, sim) in enumerate(top_3_similar_tops):
-    img_path = user_clothing_paths['top'][idx]
-    img = Image.open(img_path)
-    img.save(os.path.join(output_dir, f'similar_top_{i+1}.png'))
-    print(f"Top_{idx + 1} 저장됨: similar_top_{i+1}.png")
+    # 결과 출력
+    print("입력된 스타일과 유사도가 높은 상위 3개의 상의:")
+    for idx, sim in top_3_similar_tops:
+        print(f"Top_{idx + 1} 유사도: {sim}")
 
-for i, (idx, sim) in enumerate(bottom_3_similar_bottoms):
-    img_path = user_clothing_paths['bottom'][idx]
-    img = Image.open(img_path)
-    img.save(os.path.join(output_dir, f'similar_bottom_{i+1}.png'))
-    print(f"Bottom_{idx + 1} 저장됨: similar_bottom_{i+1}.png")
+    print("입력된 스타일과 유사도가 높은 상위 3개의 하의:")
+    for idx, sim in bottom_3_similar_bottoms:
+        print(f"Bottom_{idx + 1} 유사도: {sim}")
+
+    # 유사도가 높은 상의/하의 저장
+    output_dir = 'similar_clothings'
+    os.makedirs(output_dir, exist_ok=True)
+
+    for i, (idx, sim) in enumerate(top_3_similar_tops):
+        img_path = user_clothing_paths['top'][idx]
+        img = Image.open(img_path)
+        img.save(os.path.join(output_dir, f'similar_top_{i + 1}.png'))
+        print(f"Top_{idx + 1} 저장됨: similar_top_{i + 1}.png")
+
+    for i, (idx, sim) in enumerate(bottom_3_similar_bottoms):
+        img_path = user_clothing_paths['bottom'][idx]
+        img = Image.open(img_path)
+        img.save(os.path.join(output_dir, f'similar_bottom_{i + 1}.png'))
+        print(f"Bottom_{idx + 1} 저장됨: similar_bottom_{i + 1}.png")
+
+# 함수 호출 예시
+user_clothing_paths = {
+    'top': [
+        f'{base_path}User_Clothing_List/Tops/Top1.png',
+        f'{base_path}User_Clothing_List/Tops/Top2.png',
+        f'{base_path}User_Clothing_List/Tops/Top3.png',
+        f'{base_path}User_Clothing_List/Tops/Top4.png',
+        f'{base_path}User_Clothing_List/Tops/Top5.png',
+
+    ],
+    'bottom': [
+        f'{base_path}User_Clothing_List/Bottoms/Bottom1.png',
+        f'{base_path}User_Clothing_List/Bottoms/Bottom2.png',
+        f'{base_path}User_Clothing_List/Bottoms/Bottom3.png',
+        f'{base_path}User_Clothing_List/Bottoms/Bottom4.png',
+        f'{base_path}User_Clothing_List/Bottoms/Bottom5.png',
+    ]
+}
+
+style_image_path = f'{base_path}Clothings_Combination/test_12.png'
+
+find_similar_clothing(user_clothing_paths, style_image_path)

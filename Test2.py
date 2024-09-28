@@ -19,6 +19,7 @@ else:
 
 print(f"Using device: {device}")
 
+
 # 하이퍼파라미터 설정
 batch_size = 32  # 배치 크기를 더 작게 조정
 initial_epochs = 200  # 초기 학습 에포크 수 증가
