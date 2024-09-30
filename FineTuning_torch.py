@@ -8,7 +8,6 @@ import numpy as np
 import cv2
 import os
 import matplotlib.pyplot as plt
-import torch.onnx
 
 # 색상 히스토그램 추출 함수
 def extract_color_histogram(image):
@@ -27,36 +26,45 @@ def extract_color_histogram(image):
 class MobileNetWithHist(nn.Module):
     def __init__(self, num_classes):
         super(MobileNetWithHist, self).__init__()
-        self.base_model = models.mobilenet_v2(weights=models.MobileNet_V2_Weights.DEFAULT)
+        self.base_model = models.mobilenet_v3_small(weights=models.MobileNet_V3_Small_Weights.DEFAULT)
         self.base_model.classifier = nn.Identity()  # 최종 레이어 제거
         self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
-        
-        # MobileNetV3의 출력 크기 수정 (576)
-        mobilenet_output_size = 576  # MobileNetV3 Small의 출력 크기
+
+        # MobileNetV3의 출력 크기 동적 계산
+        mobilenet_output_size = self.base_model.features[-1][0].out_channels  # MobileNetV3의 최종 피쳐맵 크기
         hist_size = 768  # 색상 히스토그램 크기
 
-        self.fc1 = nn.Linear(mobilenet_output_size + hist_size, 1024)  # MobileNet output + 히스토그램 크기
-        self.fc2 = nn.Linear(1024, num_classes)
+        self.fc1 = nn.Linear(mobilenet_output_size + hist_size, 1024)  # 입력 크기 조정
+        self.fc2 = nn.Linear(1024, 512)
+        self.fc3 = nn.Linear(512, num_classes)
         self.dropout = nn.Dropout(0.3)
+        self.relu = nn.ReLU()
 
     def forward(self, x, hist):
         x = self.base_model.features(x)
         x = self.global_pool(x)
-        x = x.view(x.size(0), -1)  # Flatten the output
-        x = torch.cat((x, hist), dim=1)  # 히스토그램과 결합
-        x = nn.functional.leaky_relu(self.fc1(x))
+        x = x.view(x.size(0), -1)  # [batch_size, mobilenet_output_size]
+        x = torch.cat((x, hist), dim=1)  # 히스토그램과 합치기
+        x = self.relu(self.fc1(x))
         x = self.dropout(x)
-        x = self.fc2(x)
+        x = self.relu(self.fc2(x))
+        x = self.fc3(x)
         return x
 
 
-
-# 학습 및 검증 함수
-def train_model(model, criterion, optimizer, num_epochs, train_loader, val_loader):
+# 학습 및 검증 함수 (조기 종료 추가)
+def train_model(model, criterion, optimizer, num_epochs, train_loader, val_loader, patience=10):
     best_acc = 0.0
+    best_loss = float('inf')
+    epochs_no_improve = 0
+    early_stop = False
     history = {'train_loss': [], 'val_loss': [], 'train_acc': [], 'val_acc': []}
 
     for epoch in range(num_epochs):
+        if early_stop:
+            print("조기 종료로 인해 학습을 종료합니다.")
+            break
+
         model.train()
         running_loss = 0.0
         running_corrects = 0
@@ -109,15 +117,23 @@ def train_model(model, criterion, optimizer, num_epochs, train_loader, val_loade
 
         print(f"Epoch [{epoch+1}/{num_epochs}] Train Loss: {epoch_loss:.4f}, Train Acc: {epoch_acc:.4f} | Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}")
 
-        # 최상의 모델 저장
-        if val_acc > best_acc:
+        # 검증 손실이 개선되었는지 확인
+        if val_loss < best_loss:
+            best_loss = val_loss
             best_acc = val_acc
             torch.save(model.state_dict(), 'best_model.pth')
+            epochs_no_improve = 0
+        else:
+            epochs_no_improve += 1
+
+        # 조기 종료 조건 확인
+        if epochs_no_improve >= patience:
+            print(f"검증 손실이 {patience} 에포크 동안 개선되지 않아 조기 종료를 실행합니다.")
+            early_stop = True
 
     return history
 
 if __name__ == "__main__":
-
     # MPS 또는 GPU 설정
     try:
         device = torch.device("mps")
@@ -137,12 +153,12 @@ if __name__ == "__main__":
     print(f"Using device: {device}")
 
     # 하이퍼파라미터 설정
-    batch_size = 32
-    initial_epochs = 150
-    fine_tune_epochs = 200
-    learning_rate_initial = 1e-5
-    learning_rate_fine_tune = 1e-6
-    num_workers = 4  # 데이터 로더에서 사용할 워커 스레드 수 설정
+    batch_size = 64
+    initial_epochs = 50
+    fine_tune_epochs = 50
+    learning_rate_initial = 0.01
+    learning_rate_fine_tune = 0.01
+    num_workers = 6
 
     # 데이터 경로 설정
     train_dir = 'Dataset/train'
@@ -178,7 +194,7 @@ if __name__ == "__main__":
     val_dataset = datasets.ImageFolder(val_dir, transform=data_transforms['val'])
     test_dataset = datasets.ImageFolder(test_dir, transform=data_transforms['test'])
 
-    # 데이터 로더 설정 (num_workers와 pin_memory 추가)
+    # 데이터 로더 설정
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
@@ -261,7 +277,5 @@ if __name__ == "__main__":
     print('\n분류 보고서:\n', classification_report(y_true, y_pred, target_names=test_dataset.classes))
     print('\n혼동 행렬:\n', confusion_matrix(y_true, y_pred))
 
-    
-    
     # 최종 모델 저장
     torch.save(model.state_dict(), 'WOOTD-Model_V3Small.pth')

@@ -41,9 +41,19 @@ class MobileNetWithHist(nn.Module):
 
 def initialize_model(num_classes):
     fine_tuned_model = MobileNetWithHist(num_classes)
-    fine_tuned_model.load_state_dict(torch.load('WOOTD-Model_V2.pth', map_location=device))
+    
+    # 사전 학습된 가중치 로드 (fc2, fc3를 제외)
+    state_dict = torch.load('WOOTD-Model_V3Small.pth', map_location=device)
+    
+    # fc2와 fc3를 제외한 가중치만 로드
+    pretrained_dict = {k: v for k, v in state_dict.items() if "fc2" not in k and "fc3" not in k}
+    
+    # 모델에 가중치 로드
+    fine_tuned_model.load_state_dict(pretrained_dict, strict=False)
+    
     fine_tuned_model.eval()
     return fine_tuned_model.to(device)
+
 
 # 이미지 전처리 파이프라인 설정
 preprocess = transforms.Compose([
